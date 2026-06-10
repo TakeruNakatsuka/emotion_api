@@ -7,8 +7,12 @@ import joblib
 
 app = FastAPI()
 
+@app.get("/")
+def read_root():
+    return {"message": "AI Emotion API is running! 🚀"}
+
 # サーバー起動時に、学習済みの本物AIモデルを読み込む
-MODEL_PATH = "emotion_model.pkl"
+MODEL_PATH = "emotion_model.pkl"#emotion_model.pklはcolabで作成したランダムフォレストで感情判定するAIのデータ
 try:
     model = joblib.load(MODEL_PATH)
     print("AIモデルの読み込みに成功しました！")
