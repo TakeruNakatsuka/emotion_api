@@ -101,6 +101,9 @@ async def save_feedback(
         # 🌟 ここでも定規で整える
         mfcc_scaled = scaler.transform([mfcc_mean])
 
+        # 🌟 【修正】AIの箱のサイズ（32ビット）に合わせてあげる
+        mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
+        
         # 🧠 魔法の関数！今の脳みそを維持したまま「1件だけ」追加学習する！
         model.partial_fit(mfcc_scaled, [correct_emotion])
 
