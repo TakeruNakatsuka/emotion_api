@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form  # 🌟 Form を追加
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import librosa
 import numpy as np
@@ -7,17 +7,17 @@ import os
 import joblib
 
 app = FastAPI()
+
 # ==========================================
-# 🌟 2. ここから「CORS（セキュリティの壁）」を突破する許可証を追加
+# 🛡️ CORS（セキュリティの壁）を突破する許可証
 # ==========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # どこからでもアクセスOK（実験用の最強設定）
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # GETやPOSTなど、すべての通信方法を許可
-    allow_headers=["*"],  # すべてのデータ形式を許可
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-# ==========================================
 
 @app.get("/")
 def read_root():
@@ -41,7 +41,7 @@ except Exception as e:
 
 
 # ==========================================
-# 2. いつもの感情判定エンドポイント
+# 2. 感情判定エンドポイント（通常モード）
 # ==========================================
 @app.post("/analyze-emotion/")
 async def analyze_emotion(file: UploadFile = File(...)):
@@ -57,11 +57,14 @@ async def analyze_emotion(file: UploadFile = File(...)):
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_mean = np.mean(mfcc.T, axis=0)
 
-        # 🌟 ここが超重要！ AIに渡す前に「定規」で数値を綺麗に整える
+        # 定規で整える
         mfcc_scaled = scaler.transform([mfcc_mean])
+        
+        # 🌟 【念のための完全対応】ここでも32ビットの箱に変換してAIを安心させる！
+        mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
 
         # 判定
-        prediction = model.predict(mfcc_scaled)
+        prediction = model.predict(mfcc_scaled_32)
         result_emotion = prediction[0]
 
         return {
@@ -79,12 +82,12 @@ async def analyze_emotion(file: UploadFile = File(...)):
 
 
 # ==========================================
-# 3. 🌟 新規追加！ ユーザー専用にチューニングするエンドポイント
+# 3. 新規追加！ ユーザー専用にチューニングするエンドポイント
 # ==========================================
 @app.post("/feedback/")
 async def save_feedback(
     file: UploadFile = File(...),
-    correct_emotion: str = Form(...)  # ユーザーからの「本当は〇〇だよ」という正解を受け取る
+    correct_emotion: str = Form(...)
 ):
     if model is None or scaler is None:
         return {"status": "error", "message": "AIモデルがありません。"}
@@ -98,16 +101,16 @@ async def save_feedback(
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_mean = np.mean(mfcc.T, axis=0)
 
-        # 🌟 ここでも定規で整える
+        # 定規で整える
         mfcc_scaled = scaler.transform([mfcc_mean])
 
-        # 🌟 【修正】AIの箱のサイズ（32ビット）に合わせてあげる
+        # 🌟 【修正済み】AIの箱のサイズ（32ビット）に合わせてあげる
         mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
-        
-        # 🧠 魔法の関数！今の脳みそを維持したまま「1件だけ」追加学習する！
-        model.partial_fit(mfcc_scaled, [correct_emotion])
 
-        # 💾 賢くなった脳みそを上書き保存する（次に聞かれた時は賢くなっている）
+        # 今の脳みそを維持したまま「1件だけ」追加学習する！
+        model.partial_fit(mfcc_scaled_32, [correct_emotion])
+
+        # 賢くなった脳みそを上書き保存する
         joblib.dump(model, MODEL_PATH)
 
         return {
