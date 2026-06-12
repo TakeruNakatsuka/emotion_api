@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form  # 🌟 Form を追加
+from fastapi.middleware.cors import CORSMiddleware
 import librosa
 import numpy as np
 import shutil
