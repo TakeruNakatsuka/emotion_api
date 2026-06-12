@@ -7,6 +7,17 @@ import os
 import joblib
 
 app = FastAPI()
+# ==========================================
+# 🌟 2. ここから「CORS（セキュリティの壁）」を突破する許可証を追加
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # どこからでもアクセスOK（実験用の最強設定）
+    allow_credentials=True,
+    allow_methods=["*"],  # GETやPOSTなど、すべての通信方法を許可
+    allow_headers=["*"],  # すべてのデータ形式を許可
+)
+# ==========================================
 
 @app.get("/")
 def read_root():
