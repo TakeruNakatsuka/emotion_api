@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from supabase import create_client, Client
 import librosa
 import numpy as np
 import shutil
@@ -8,9 +9,6 @@ import joblib
 
 app = FastAPI()
 
-# ==========================================
-# 🛡️ CORS（セキュリティの壁）を突破する許可証
-# ==========================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,24 +19,48 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "AI Emotion API (Online Learning Mode) is running! 🚀"}
+    return {"message": "AI Emotion API (Cloud Storage Mode) is running! 🚀"}
 
 # ==========================================
-# 1. サーバー起動時に「脳みそ」と「定規」を読み込む
+# ☁️ Supabase（外部ストレージ）の設定
 # ==========================================
+# Renderの環境変数からキーを読み込む（見つからない場合は直書きのキーを使う）
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+BUCKET_NAME = "ai-models"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 MODEL_PATH = "sgd_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
+# ==========================================
+# 1. サーバー起動時にクラウドから最新の「脳みそ」と「定規」をダウンロード
+# ==========================================
+print("☁️ Supabaseから最新のAIモデルをダウンロードしています...")
 try:
+    # モデルのダウンロード
+    with open(MODEL_PATH, "wb") as f:
+        res = supabase.storage.from_(BUCKET_NAME).download(MODEL_PATH)
+        f.write(res)
+    # 定規のダウンロード
+    with open(SCALER_PATH, "wb") as f:
+        res = supabase.storage.from_(BUCKET_NAME).download(SCALER_PATH)
+        f.write(res)
+    
     model = joblib.load(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
-    print("🎉 AIモデルと定規の読み込みに完全成功しました！")
+    print("🎉 クラウドAIモデルの読み込みに完全成功しました！")
 except Exception as e:
-    print(f"⚠️ エラー: {e}")
-    print("フォルダ内に sgd_model.pkl と scaler.pkl は配置されていますか？")
-    model = None
-    scaler = None
-
+    print(f"⚠️ クラウドからのダウンロードに失敗しました: {e}")
+    # フォールバック（ローカルにファイルがあればそれを使う）
+    try:
+        model = joblib.load(MODEL_PATH)
+        scaler = joblib.load(SCALER_PATH)
+        print("💡 ローカルのAIモデルを読み込みました。")
+    except:
+        model = None
+        scaler = None
 
 # ==========================================
 # 2. 感情判定エンドポイント（通常モード）
@@ -57,13 +79,9 @@ async def analyze_emotion(file: UploadFile = File(...)):
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_mean = np.mean(mfcc.T, axis=0)
 
-        # 定規で整える
         mfcc_scaled = scaler.transform([mfcc_mean])
-        
-        # 🌟 【念のための完全対応】ここでも32ビットの箱に変換してAIを安心させる！
         mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
 
-        # 判定
         prediction = model.predict(mfcc_scaled_32)
         result_emotion = prediction[0]
 
@@ -80,9 +98,8 @@ async def analyze_emotion(file: UploadFile = File(...)):
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
-
 # ==========================================
-# 3. 新規追加！ ユーザー専用にチューニングするエンドポイント
+# 3. 追加学習 ＆ クラウドへ上書き保存エンドポイント
 # ==========================================
 @app.post("/feedback/")
 async def save_feedback(
@@ -101,21 +118,25 @@ async def save_feedback(
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         mfcc_mean = np.mean(mfcc.T, axis=0)
 
-        # 定規で整える
         mfcc_scaled = scaler.transform([mfcc_mean])
-
-        # 🌟 【修正済み】AIの箱のサイズ（32ビット）に合わせてあげる
         mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
 
         # 今の脳みそを維持したまま「1件だけ」追加学習する！
         model.partial_fit(mfcc_scaled_32, [correct_emotion])
 
-        # 賢くなった脳みそを上書き保存する
+        # 1. まず Render のローカルサーバーに上書き保存
         joblib.dump(model, MODEL_PATH)
+
+        # 2. ☁️ Supabase に賢くなった新しい脳みそをアップロード（上書き）する！
+        supabase.storage.from_(BUCKET_NAME).upload(
+            file=MODEL_PATH, 
+            path=MODEL_PATH, 
+            file_options={"upsert": "true"}
+        )
 
         return {
             "status": "success",
-            "message": f"学習完了！AIの脳みそを「{correct_emotion}」に合わせてチューニングしました！🧠✨"
+            "message": f"学習完了！新しい脳みそをクラウド(Supabase)に上書き保存しました！🧠☁️✨"
         }
 
     except Exception as e:
