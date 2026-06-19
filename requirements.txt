@@ -5,3 +5,4 @@ soundfile
 python-multipart
 scikit-learn
 joblib
+supabase
