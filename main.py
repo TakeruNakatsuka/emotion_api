@@ -6,6 +6,7 @@ import numpy as np
 import shutil
 import os
 import joblib
+import copy  # 🌟 初期AIを「コピー」して新しいユーザーに配るために追加
 
 app = FastAPI()
 
@@ -19,57 +20,71 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "AI Emotion API (Cloud Storage Mode) is running! 🚀"}
+    return {"message": "AI Emotion API (Personalized Mode) is running! 🚀"}
 
 # ==========================================
 # ☁️ Supabase（外部ストレージ）の設定
 # ==========================================
-# Renderの環境変数からキーを読み込む（見つからない場合は直書きのキーを使う）
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 BUCKET_NAME = "ai-models"
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("\n🚨 [重大エラー] Renderの環境変数が設定されていません！")
+    raise ValueError("Supabaseの環境変数が不足しています。")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_PATH = "sgd_model.pkl"
+# 共通のファイル名
+BASE_MODEL_PATH = "sgd_model.pkl"
 SCALER_PATH = "scaler.pkl"
 
 # ==========================================
-# 1. サーバー起動時にクラウドから最新の「脳みそ」と「定規」をダウンロード
+# 1. サーバー起動時：共通の「初期脳みそ」と「定規」をロード
 # ==========================================
-print("☁️ Supabaseから最新のAIモデルをダウンロードしています...")
 try:
-    # モデルのダウンロード
-    with open(MODEL_PATH, "wb") as f:
-        res = supabase.storage.from_(BUCKET_NAME).download(MODEL_PATH)
+    with open(BASE_MODEL_PATH, "wb") as f:
+        res = supabase.storage.from_(BUCKET_NAME).download(BASE_MODEL_PATH)
         f.write(res)
-    # 定規のダウンロード
     with open(SCALER_PATH, "wb") as f:
         res = supabase.storage.from_(BUCKET_NAME).download(SCALER_PATH)
         f.write(res)
     
-    model = joblib.load(MODEL_PATH)
+    base_model = joblib.load(BASE_MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
-    print("🎉 クラウドAIモデルの読み込みに完全成功しました！")
+    print("🎉 初期AIモデルと定規の準備が完了しました！")
 except Exception as e:
-    print(f"⚠️ クラウドからのダウンロードに失敗しました: {e}")
-    # フォールバック（ローカルにファイルがあればそれを使う）
+    print(f"⚠️ 起動エラー（ローカルのファイルを使います）: {e}")
+    base_model = joblib.load(BASE_MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+
+# 🌟 ユーザー専用の脳みそをロードする便利関数
+def get_user_model(user_id: str):
+    user_model_path = f"sgd_model_{user_id}.pkl"
+    
+    # ① すでにRenderのローカルにダウンロード済みならそれを使う（爆速）
+    if os.path.exists(user_model_path):
+        return joblib.load(user_model_path), user_model_path
+        
+    # ② クラウド(Supabase)から探してダウンロードする
     try:
-        model = joblib.load(MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
-        print("💡 ローカルのAIモデルを読み込みました。")
+        res = supabase.storage.from_(BUCKET_NAME).download(user_model_path)
+        with open(user_model_path, "wb") as f:
+            f.write(res)
+        return joblib.load(user_model_path), user_model_path
     except:
-        model = None
-        scaler = None
+        # ③ 見つからない（新規ユーザー）場合は、初期AIをコピーしてプレゼントする！
+        print(f"💡 新規ユーザー {user_id} です。初期モデルをコピーします。")
+        return copy.deepcopy(base_model), user_model_path
 
 # ==========================================
-# 2. 感情判定エンドポイント（通常モード）
+# 2. 感情判定エンドポイント（ユーザーID対応）
 # ==========================================
 @app.post("/analyze-emotion/")
-async def analyze_emotion(file: UploadFile = File(...)):
-    if model is None or scaler is None:
-        return {"status": "error", "message": "AIモデルまたは定規が読み込まれていません。"}
-
+async def analyze_emotion(
+    file: UploadFile = File(...),
+    user_id: str = Form(...)  # 🌟 名札を受け取る
+):
     temp_file_path = f"temp_{file.filename}"
     with open(temp_file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -82,33 +97,27 @@ async def analyze_emotion(file: UploadFile = File(...)):
         mfcc_scaled = scaler.transform([mfcc_mean])
         mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
 
-        prediction = model.predict(mfcc_scaled_32)
-        result_emotion = prediction[0]
+        # 🌟 その人専用の脳みそをロードして判定！
+        user_model, _ = get_user_model(user_id)
+        prediction = user_model.predict(mfcc_scaled_32)
 
-        return {
-            "status": "success",
-            "filename": file.filename,
-            "emotion": result_emotion
-        }
+        return {"status": "success", "emotion": prediction[0], "user_id": user_id}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
     finally:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
 # ==========================================
-# 3. 追加学習 ＆ クラウドへ上書き保存エンドポイント
+# 3. 追加学習 ＆ 上書き保存（ユーザーID対応）
 # ==========================================
 @app.post("/feedback/")
 async def save_feedback(
     file: UploadFile = File(...),
-    correct_emotion: str = Form(...)
+    correct_emotion: str = Form(...),
+    user_id: str = Form(...)  # 🌟 名札を受け取る
 ):
-    if model is None or scaler is None:
-        return {"status": "error", "message": "AIモデルがありません。"}
-
     temp_file_path = f"temp_feedback_{file.filename}"
     with open(temp_file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -121,27 +130,27 @@ async def save_feedback(
         mfcc_scaled = scaler.transform([mfcc_mean])
         mfcc_scaled_32 = mfcc_scaled.astype(np.float32)
 
-        # 今の脳みそを維持したまま「1件だけ」追加学習する！
-        model.partial_fit(mfcc_scaled_32, [correct_emotion])
+        # 🌟 その人専用の脳みそをロードして追加学習！
+        user_model, user_model_path = get_user_model(user_id)
+        user_model.partial_fit(mfcc_scaled_32, [correct_emotion])
 
-        # 1. まず Render のローカルサーバーに上書き保存
-        joblib.dump(model, MODEL_PATH)
+        # Renderに保存
+        joblib.dump(user_model, user_model_path)
 
-        # 2. ☁️ Supabase に賢くなった新しい脳みそをアップロード（上書き）する！
+        # Supabaseにその人の名前でアップロード！
         supabase.storage.from_(BUCKET_NAME).upload(
-            file=MODEL_PATH, 
-            path=MODEL_PATH, 
+            file=user_model_path, 
+            path=user_model_path, 
             file_options={"upsert": "true"}
         )
 
         return {
             "status": "success",
-            "message": f"学習完了！新しい脳みそをクラウド(Supabase)に上書き保存しました！🧠☁️✨"
+            "message": f"{user_id} さん専用のAIとして学習・保存しました！🧠✨"
         }
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
     finally:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
